@@ -1,0 +1,55 @@
+```mermaid
+graph TD
+
+    subgraph NetworkMeasurementService
+
+        NMS["Inicio da Medicao"]
+
+        MTU_LOOP{"Testar tamanhos\n1500 1400 1300 ate 576"}
+
+        UDP_SEND["DatagramSocket UDP\nEnviar pacote sem fragmentar"]
+
+        MTU_FOUND["Retorna MTU real\n1500 bytes"]
+
+        RTT_LOOP{"Loop 10 amostras"}
+
+        TCP_CONN["Socket connect TCP\nHost 8.8.8.8 porta 53"]
+
+        RTT_CALC["Armazena RTT\nIda e volta"]
+
+        STATS["Calcula media minimo\nmaximo e jitter"]
+
+        NMS -->|Descobrir MTU| MTU_LOOP
+
+        MTU_LOOP -->|Enviar UDP| UDP_SEND
+
+        UDP_SEND -->|Sucesso| MTU_FOUND
+
+        UDP_SEND -->|Falha ou timeout| MTU_LOOP
+
+        NMS -->|Medir latencia TCP| RTT_LOOP
+
+        RTT_LOOP -->|Socket connect| TCP_CONN
+
+        TCP_CONN -->|nanoTime| RTT_CALC
+
+        RTT_CALC -->|Fim do loop| STATS
+
+    end
+
+    TLS["TlsOverheadService"]
+
+    MTU_FOUND -.->|Injeta MTU| TLS
+
+    STATS -.->|Injeta RTT medio| TLS
+
+    classDef network fill:#e2e3e5,stroke:#343a40,stroke-width:2px;
+    classDef udp fill:#d1ecf1,stroke:#17a2b8;
+    classDef tcp fill:#cce5ff,stroke:#007bff;
+
+    class NMS network;
+
+    class MTU_LOOP,UDP_SEND,MTU_FOUND udp;
+
+    class RTT_LOOP,TCP_CONN,RTT_CALC,STATS tcp;
+```

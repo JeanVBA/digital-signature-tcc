@@ -1,0 +1,48 @@
+```mermaid
+graph TD
+
+    subgraph Configuracao
+        BC["BouncyCastleConfig\n@Configuration"]
+        OAPI["OpenApiConfig\n@Configuration"]
+        SW["Swagger UI"]
+        JCA["JCA / JCE"]
+
+        BC -->|Injeta Provider BC| JCA
+        OAPI -->|Gera Swagger| SW
+    end
+
+    subgraph Servicos
+        CS["CryptoSignatureService\n@Service"]
+        FS["ForgeryService\n@Service"]
+        TLS["TlsOverheadService\n@Service"]
+    end
+
+    subgraph Repositories
+        DR["DocumentRepository"]
+        SR["SignatureRepository"]
+        FR["ForgeryAttemptRepository"]
+    end
+
+    ECDSA["ECDSA secp256r1"]
+    PQC["ML-DSA-44"]
+
+    CS -->|Solicita assinatura| JCA
+    JCA -->|FIPS 186-5| ECDSA
+    JCA -->|FIPS 204| PQC
+
+    CS -->|Persiste assinaturas| SR
+    CS -->|Persiste documentos| DR
+
+    FS -->|Recupera chave publica| SR
+    FS -->|Persiste tentativas| FR
+
+    TLS -->|Calcula MTU| SR
+
+    classDef config fill:#fff3cd,stroke:#ffc107,stroke-width:2px;
+    classDef service fill:#cce5ff,stroke:#007bff,stroke-width:2px;
+    classDef crypto fill:#e2e3e5,stroke:#6c757d,stroke-width:2px;
+
+    class BC,OAPI config;
+    class CS,FS,TLS service;
+    class JCA,ECDSA,PQC crypto;
+```

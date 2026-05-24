@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: pqc-assinatura-digital
+
+  # Banco H2 em memória para desenvolvimento/testes
+  datasource:
+    url: jdbc:h2:mem:pqcdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  h2:
+    console:
+      enabled: false
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop  # Cria as tabelas ao iniciar, apaga ao parar
+    show-sql: true           # Mostra o SQL gerado no console (útil no TCC)
+    properties:
+      hibernate:
+        format_sql: true
+
+  # Limite de tamanho para upload de PDF/Word
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 50MB
+      max-request-size: 55MB
+
+# Swagger UI
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /api-docs

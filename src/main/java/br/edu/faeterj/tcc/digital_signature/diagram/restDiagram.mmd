@@ -1,0 +1,72 @@
+```mermaid
+graph LR
+
+    CLIENTE((Cliente))
+
+    subgraph Controllers
+        DC["DocumentController"]
+        TC["TlsOverheadController"]
+    end
+
+    subgraph Assinatura
+        E1["POST /sign"]
+        E2["GET /validar/id"]
+        E3["POST /falsificate-content/id"]
+        E4["POST /falsificate-signature/id"]
+        E5["GET /historical-forgeries"]
+    end
+
+    subgraph Metricas
+        M1["GET /overhead-tls"]
+        M2["GET /overhead-tls/document/id"]
+        M3["GET /overhead-tls/ranking"]
+        M4["GET /overhead-tls/grafics"]
+        M5["GET /overhead-tls/network-conditions"]
+        M6["GET /overhead-tls/simulate-tls-handshake"]
+    end
+
+    subgraph Services
+        CS["CryptoSignatureService"]
+        FS["ForgeryService"]
+        TOS["TlsOverheadService"]
+        NS["NetworkMeasurementService"]
+    end
+
+    CLIENTE --> DC
+    CLIENTE --> TC
+
+    DC -.-> E1
+    DC -.-> E2
+    DC -.-> E3
+    DC -.-> E4
+    DC -.-> E5
+
+    TC -.-> M1
+    TC -.-> M2
+    TC -.-> M3
+    TC -.-> M4
+
+    E1 --> CS
+    E2 --> CS
+    E3 --> CS
+
+    E4 --> FS
+    E5 --> FS
+
+    M1 --> TOS
+    M2 --> TOS
+    M3 --> TOS
+    M4 --> TOS
+    M5 --> NS
+    M6 --> NS
+
+    classDef client fill:#f8f9fa,stroke:#343a40,stroke-width:2px;
+    classDef controller fill:#e2e3e5,stroke:#495057,stroke-width:2px;
+    classDef endpoint fill:#d1ecf1,stroke:#17a2b8,stroke-width:1px;
+    classDef service fill:#d4edda,stroke:#28a745,stroke-width:2px;
+
+    class CLIENTE client;
+    class DC,TC controller;
+    class E1,E2,E3,E4,E5,M1,M2,M3,M4 endpoint;
+    class CS,FS,TOS,NS service;
+```

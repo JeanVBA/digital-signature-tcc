@@ -1,0 +1,54 @@
+```mermaid
+graph LR
+
+    NET["NetworkMeasurementService"]
+
+    TOS["TlsOverheadService"]
+
+    NET -->|mtuReal| TOS
+    NET -->|rttMedioMs| TOS
+
+    subgraph DynamicCalculations
+
+        START["Recebe requisicao"]
+
+        GRP{"Agrupar assinaturas\npor algoritmo"}
+
+        ECDSA["ECDSA\nBytes chave + assinatura"]
+
+        MLDSA["ML-DSA\nBytes chave + assinatura"]
+
+        CALC_PKT{"Calculo de pacotes\nceil TotalBytes dividido por mtuReal"}
+
+        CALC_LAT{"Calculo de latencia\nPacotes vezes rttMedioMs"}
+
+        COMP["Gerar relatorio comparativo"]
+
+        START --> GRP
+
+        GRP -->|Grupo ECDSA| ECDSA
+        GRP -->|Grupo ML-DSA| MLDSA
+
+        ECDSA --> CALC_PKT
+        MLDSA --> CALC_PKT
+
+        CALC_PKT --> CALC_LAT
+
+        CALC_LAT --> COMP
+
+    end
+
+    TOS --> START
+
+    OUT["ML-DSA exigiu X pacotes\nECDSA exigiu Y pacotes\nLatencia extra Z ms"]
+
+    COMP -->|Conclusao| OUT
+
+    classDef calc fill:#fff3cd,stroke:#ffc107,stroke-width:2px;
+
+    classDef service fill:#d4edda,stroke:#28a745,stroke-width:2px;
+
+    class CALC_PKT,CALC_LAT calc;
+
+    class TOS,COMP service;
+```

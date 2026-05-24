@@ -1,0 +1,36 @@
+```mermaid
+erDiagram
+
+    DOCUMENTS {
+        bigint id PK
+        string name
+        string type
+        blob content
+        datetime createdAt
+    }
+
+    SIGNATURES {
+        bigint id PK
+        bigint document_id FK
+        string typeAlgorithm
+        string hashDocument
+        blob signatureBytes
+        blob publicKeyBytes
+        datetime signatureDate
+        boolean valid
+    }
+
+    FORGERY_ATTEMPTS {
+        bigint id PK
+        bigint signature_id FK
+        datetime attemptDate
+        string attackType
+        string algorithm
+        blob forgedSignatureBytes
+        boolean succeeded
+        string technicalReason
+    }
+
+    DOCUMENTS ||--o{ SIGNATURES : possui
+    SIGNATURES ||--o{ FORGERY_ATTEMPTS : sofre
+```

@@ -1,0 +1,49 @@
+```mermaid
+sequenceDiagram
+
+    autonumber
+
+    actor Cliente as Cliente_Testador
+
+    participant FS as ForgeryService
+    participant SR as SignatureRepository
+    participant JCA as BouncyCastle_JCA
+    participant FR as ForgeryAttemptRepository
+
+    Cliente->>FS: POST attemptForgery
+    activate FS
+
+    FS->>SR: findById(signatureId)
+
+    SR-->>FS: Retorna assinatura original
+
+    Note over FS,JCA: Inicio dos ataques
+
+    FS->>FS: Gerar bytes aleatorios
+
+    FS->>JCA: verify(randomBytes)
+
+    JCA-->>FS: FALSE
+
+    FS->>FR: Salvar RANDOM_BYTES
+
+    FS->>FS: Gerar assinatura zerada
+
+    FS->>JCA: verify(zeroedBytes)
+
+    JCA-->>FS: FALSE
+
+    FS->>FR: Salvar ZEROED
+
+    FS->>FS: Inverter bits
+
+    FS->>JCA: verify(flippedBytes)
+
+    JCA-->>FS: FALSE
+
+    FS->>FR: Salvar FLIPPED_BITS
+
+    FS-->>Cliente: JSON com falhas
+
+    deactivate FS
+```

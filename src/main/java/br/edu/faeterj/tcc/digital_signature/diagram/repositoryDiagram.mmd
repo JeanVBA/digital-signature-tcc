@@ -1,0 +1,29 @@
+```mermaid
+graph TD
+
+    subgraph RepositoryLayer
+        DR["DocumentRepository\nJpaRepository"]
+        SR["SignatureRepository\nJpaRepository"]
+        FR["ForgeryAttemptRepository\nJpaRepository"]
+    end
+
+    subgraph BancoRelacional
+        BD[(PostgreSQL / H2)]
+        TB_D["documents"]
+        TB_S["signatures"]
+        TB_F["forgery_attempts"]
+    end
+
+    DR -->|Gerencia| TB_D
+    SR -->|Gerencia| TB_S
+    FR -->|Gerencia| TB_F
+
+    TB_D -.->|1:N| TB_S
+    TB_S -.->|1:N| TB_F
+
+    classDef repo fill:#d4edda,stroke:#28a745,stroke-width:2px,color:#000;
+    classDef db fill:#f8d7da,stroke:#dc3545,stroke-width:2px,color:#000;
+
+    class DR,SR,FR repo;
+    class BD,TB_D,TB_S,TB_F db;
+```
