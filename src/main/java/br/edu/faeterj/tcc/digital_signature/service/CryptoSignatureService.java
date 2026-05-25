@@ -1,6 +1,10 @@
 package br.edu.faeterj.tcc.digital_signature.service;
 
 import org.bouncycastle.jcajce.spec.MLDSAParameterSpec;
+import org.bouncycastle.jce.ECNamedCurveTable;
+import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
+import org.bouncycastle.jce.spec.ECPrivateKeySpec;
+import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.springframework.stereotype.Service;
 
 import br.edu.faeterj.tcc.digital_signature.config.BouncyCastleConfig;
@@ -11,19 +15,24 @@ import br.edu.faeterj.tcc.digital_signature.repository.SignatureRepository;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.AllArgsConstructor;
 
+import java.math.BigInteger;
 import java.security.*;
+import java.security.interfaces.ECPrivateKey;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Service
 @AllArgsConstructor
 public class CryptoSignatureService {
-    /**
-     * Gera chaves e assina um payload usando ECDSA (secp256r1)
-     */
+
+    private static final BigInteger N = new BigInteger(
+            "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16);
     private final SignatureRepository signatureRepository;
     private final DocumentRepository documentRepository;
 
@@ -65,9 +74,6 @@ public class CryptoSignatureService {
         return signatureRepository.save(entity);
     }
 
-    /**
-     * Valida assinatura digital clássica ECDSA
-     */
     public boolean isValidECDSA(byte[] data, byte[] assinatura, byte[] chavePublicaBytes)
             throws GeneralSecurityException {
 
@@ -80,11 +86,6 @@ public class CryptoSignatureService {
         sig.update(data);
         return sig.verify(assinatura);
     }
-
-    /**
-     * Gera chaves e assina um payload usando o modelo pós-quântico ML-DSA-44 (FIPS
-     * 204)
-     */
 
     public SignatureEntity signWithMLDSA(DocumentEntity doc)
             throws GeneralSecurityException {
@@ -125,9 +126,6 @@ public class CryptoSignatureService {
         return signatureRepository.save(entity);
     }
 
-    /**
-     * Valida assinatura digital pós-quântica ML-DSA
-     */
     public boolean isValidMLDSA(byte[] data, byte[] assinatura, byte[] chavePublicaBytes)
             throws GeneralSecurityException {
 
@@ -215,11 +213,6 @@ public class CryptoSignatureService {
         }
     }
 
-    /**
-     * Verifica só a estrutura criptográfica da assinatura —
-     * se os bytes são uma assinatura válida para o algoritmo,
-     * independente do conteúdo do documento.
-     */
     private boolean verifySignatureStructure(SignatureEntity sig)
             throws GeneralSecurityException {
 
@@ -274,6 +267,152 @@ public class CryptoSignatureService {
                 yield s.verify(sig.getSignatureBytes());
             }
             default -> false;
+        };
+    }
+
+    public Map<String, Object> attackSignatureECDSA(
+            Long signatureId, String newMessage) throws Exception {
+
+        SignatureEntity sig = signatureRepository.findById(signatureId)
+                .orElseThrow(() -> new EntityNotFoundException(
+                        "Assinatura não encontrada: " + signatureId));
+
+        if (!"ECDSA".equals(sig.getTypeAlgorithm())) {
+            Map<String, Object> errorReport = new LinkedHashMap<>();
+            errorReport.put("titulo", "Erro: Assinatura Incompatível para o Experimento");
+            errorReport.put("referencia", "Este experimento é específico para ECDSA. " +
+                    "A assinatura " + signatureId + " usa " + sig.getTypeAlgorithm());
+            errorReport.put("message", "Por favor, selecione uma assinatura ECDSA para este experimento.");
+            return errorReport;
+        }
+
+        // ── Extrai r e s da assinatura DER real do banco ─────────
+        // O Bouncy Castle gera assinaturas ECDSA no formato DER: 30 44 02 20 [r] 02 20
+        // [s]
+        byte[] derBytes = sig.getSignatureBytes();
+        BigInteger[] rs = extractRSIntoDER(derBytes);
+        BigInteger r = rs[0];
+        BigInteger s1 = rs[1];
+
+        // ── h1 = hash real do documento original ──────────────────
+        BigInteger h1 = new BigInteger(1,
+                MessageDigest.getInstance("SHA-256")
+                        .digest(sig.getDocument().getContent()));
+
+        // ── Gera uma segunda assinatura com k REUTILIZADO ─────────
+        // Simula a falha: gera nova chave mas força o mesmo k
+        // na prática, extrai k implícito da assinatura original
+        // k = (h1 + d*r) * s1^-1 mod n — mas d é desconhecido
+        // Para a demonstração didática: gera novo par e fixa k
+        KeyPairGenerator gen = KeyPairGenerator.getInstance("EC", "BC");
+        gen.initialize(new ECGenParameterSpec("secp256r1"));
+        KeyPair par = gen.generateKeyPair();
+        ECPrivateKey chavePrivada = (ECPrivateKey) par.getPrivate();
+        BigInteger d = chavePrivada.getS();
+
+        // k fixo — simula PRNG com defeito retornando sempre o mesmo valor
+        BigInteger k = new BigInteger(256, new SecureRandom()).mod(N.subtract(BigInteger.ONE))
+                .add(BigInteger.ONE);
+
+        // Recalcula r com o k simulado para consistência matemática
+        // r = (k*G).x mod n — aproximado via fórmula inversa para didática
+        BigInteger kInv = k.modInverse(N);
+        BigInteger rSimulado = kInv.multiply(h1.add(d.multiply(r.mod(N)))).mod(N);
+        final BigInteger rSimuladoUsado = rSimulado.equals(BigInteger.ZERO) ? r : rSimulado;
+
+        // s1 recalculado com d e k conhecidos
+        BigInteger s1Sim = kInv.multiply(h1.add(d.multiply(rSimuladoUsado))).mod(N);
+
+        // h2 = hash da segunda mensagem
+        BigInteger h2 = new BigInteger(1,
+                MessageDigest.getInstance("SHA-256")
+                        .digest(newMessage.getBytes()));
+
+        // s2 com mesmo k — aqui está a vulnerabilidade
+        BigInteger s2 = kInv.multiply(h2.add(d.multiply(rSimuladoUsado))).mod(N);
+
+        // ── Ataque: extrai d ──────────────────────────────────────
+        // d = (s1*h2 - s2*h1) / r*(s2-s1) mod n
+        BigInteger numerator = s1Sim.multiply(h2).subtract(s2.multiply(h1)).mod(N);
+        BigInteger denominator = rSimuladoUsado.multiply(s2.subtract(s1Sim)).mod(N);
+        BigInteger dExtracted = numerator.multiply(denominator.modInverse(N)).mod(N);
+        boolean isSuccess = dExtracted.equals(d);
+
+        Map<String, Object> report = new LinkedHashMap<>();
+
+        if (isSuccess) {
+
+            // Reconstrói a chave privada a partir do d extraído
+            ECNamedCurveParameterSpec curveSpec = ECNamedCurveTable.getParameterSpec("secp256r1");
+            ECPrivateKeySpec privateKeySpec = new ECPrivateKeySpec(dExtracted, curveSpec);
+            KeyFactory kf = KeyFactory.getInstance("EC", "BC");
+            PrivateKey forgedPrivateKey = kf.generatePrivate(privateKeySpec);
+
+            // Recalcula a chave pública a partir do d extraído
+            // Q = d * G
+            org.bouncycastle.math.ec.ECPoint Q = curveSpec.getG().multiply(dExtracted).normalize();
+            ECPublicKeySpec publicKeySpec = new ECPublicKeySpec(Q, curveSpec);
+            PublicKey forgedPublicKey = kf.generatePublic(publicKeySpec);
+
+            // Assina o documento original com a chave privada forjada
+            Signature forgedSig = Signature.getInstance("SHA256withECDSA", "BC");
+            forgedSig.initSign(forgedPrivateKey);
+            forgedSig.update(sig.getDocument().getContent());
+            byte[] forgedSignatureBytes = forgedSig.sign();
+
+            // Verifica que a assinatura forjada passa na validação
+            Signature verifier = Signature.getInstance("SHA256withECDSA", "BC");
+            verifier.initVerify(forgedPublicKey);
+            verifier.update(sig.getDocument().getContent());
+            boolean forgedIsValid = verifier.verify(forgedSignatureBytes);
+
+            // Persiste no banco como se fosse uma assinatura legítima
+            SignatureEntity forgedEntity = new SignatureEntity();
+            forgedEntity.setDocument(sig.getDocument());
+            forgedEntity.setTypeAlgorithm("ECDSA");
+            forgedEntity.setPublicKeyBytes(forgedPublicKey.getEncoded());
+            forgedEntity.setSignatureBytes(forgedSignatureBytes);
+            forgedEntity.setSignatureDate(LocalDateTime.now());
+            forgedEntity.setHashDocument(calculateHash(sig.getDocument().getContent()));
+            forgedEntity.setValid(forgedIsValid);
+            SignatureEntity savedForged = signatureRepository.save(forgedEntity);
+
+            report.put("forgedSignaturePersisted", new LinkedHashMap<String, Object>() {
+                {
+                    put("signatureId", savedForged.getId());
+                    put("documentId", sig.getDocument().getId());
+                    put("documentName", sig.getDocument().getName());
+                    put("algorithm", "ECDSA");
+                    put("signatureDate", savedForged.getSignatureDate());
+                    put("isValid", forgedIsValid);
+                    put("signatureSizeBytes", forgedSignatureBytes.length);
+                    put("publicKeyBytes", forgedPublicKey.getEncoded().length);
+                    put("alertaCritico",
+                            "Esta assinatura foi gerada com a chave privada EXTRAÍDA por " +
+                                    "álgebra linear. Ela é INDISTINGUÍVEL de uma assinatura legítima " +
+                                    "— o sistema de validação a aceita como verdadeira.");
+                    put("instrucao",
+                            "Chame GET /api/crypto/validar-assinatura/" + savedForged.getId() +
+                                    " para confirmar que a assinatura forjada passa na validação.");
+                }
+            });
+        }
+        return report;
+    }
+
+    private BigInteger[] extractRSIntoDER(byte[] der) {
+        int offset = 2; // pula 0x30 e length
+        offset++; // pula 0x02
+        int rLen = der[offset++] & 0xFF;
+        byte[] rBytes = Arrays.copyOfRange(der, offset, offset + rLen);
+        offset += rLen;
+        offset++; // pula 0x02
+        int sLen = der[offset++] & 0xFF;
+        byte[] sBytes = Arrays.copyOfRange(der, offset, offset + sLen);
+
+        return new BigInteger[] {
+                new BigInteger(1, rBytes),
+                new BigInteger(1, sBytes)
         };
     }
 

@@ -6,23 +6,38 @@ graph LR
     subgraph Controllers
         DC["DocumentController"]
         TC["TlsOverheadController"]
+        CL["CalculationReportController"]
+        EM["EmailController"]
     end
 
     subgraph Assinatura
         E1["POST /sign"]
-        E2["GET /validar/id"]
-        E3["POST /falsificate-content/id"]
-        E4["POST /falsificate-signature/id"]
-        E5["GET /historical-forgeries"]
+        E8["POST /nonce-reuse/{signatureId}"]
+        E2["POST /falsificate-content/documentId"]
+        E3["POST /falsificate-signature/signatureId"]
+        E4["GET /validate/signatureId"]
+        E5["GET /validate-signature/signatureId"]
+        E6["GET /historical-forgeries/signatureId"]
+        E7["GET /historical-forgeries"]
     end
 
     subgraph Metricas
-        M1["GET /overhead-tls"]
-        M2["GET /overhead-tls/document/id"]
+        M1["GET /overhead-tls/simulate-tls-handshake"]
+        M2["GET /overhead-tls"]
         M3["GET /overhead-tls/ranking"]
         M4["GET /overhead-tls/grafics"]
-        M5["GET /overhead-tls/network-conditions"]
-        M6["GET /overhead-tls/simulate-tls-handshake"]
+        M5["GET /overhead-tls/document/id"]
+        M6["GET /overhead-tls/network-conditions"]
+        
+    end
+
+    subgraph Email
+        EM1["POST /send/signatureId"]
+    end
+
+    subgraph Calculation
+        CR1["GET  /mldsa/simulated-public-key"]
+        CR2["GET  /ecdsa/simulated-signature"]
     end
 
     subgraph Services
@@ -30,35 +45,59 @@ graph LR
         FS["ForgeryService"]
         TOS["TlsOverheadService"]
         NS["NetworkMeasurementService"]
+        AL["AlgotrithmCalculatedService"]
+        ESS["EmailSignatureService"]
+        NMS['NetworkMetricsService']
     end
 
     CLIENTE --> DC
     CLIENTE --> TC
+    CLIENTE --> CL
+    CLIENTE --> EM
 
     DC -.-> E1
     DC -.-> E2
     DC -.-> E3
     DC -.-> E4
     DC -.-> E5
+    DC -.-> E6
+    DC -.-> E7
+    DC -.-> E8
 
     TC -.-> M1
     TC -.-> M2
     TC -.-> M3
     TC -.-> M4
+    TC -.-> M5
+    TC -.-> M6
 
     E1 --> CS
     E2 --> CS
-    E3 --> CS
+    E3 --> FS
 
-    E4 --> FS
-    E5 --> FS
+    E4 --> CS
+    E5 --> CS
+    E6 --> FS
+    E7 --> FS
+    E8 --> CS
 
-    M1 --> TOS
+    M1 --> NS
     M2 --> TOS
     M3 --> TOS
     M4 --> TOS
-    M5 --> NS
+    M5 --> TOS
     M6 --> NS
+
+    CL --> CR1
+    CL --> CR2
+
+    CR1 --> AL
+    CR2 --> AL
+
+    EM --> EM1
+
+    EM1 --> ESS
+    ESS --> NMS
 
     classDef client fill:#f8f9fa,stroke:#343a40,stroke-width:2px;
     classDef controller fill:#e2e3e5,stroke:#495057,stroke-width:2px;
@@ -66,7 +105,7 @@ graph LR
     classDef service fill:#d4edda,stroke:#28a745,stroke-width:2px;
 
     class CLIENTE client;
-    class DC,TC controller;
-    class E1,E2,E3,E4,E5,M1,M2,M3,M4 endpoint;
-    class CS,FS,TOS,NS service;
+    class DC,TC,CL,EM controller;
+    class E1,E2,E3,E4,E5,E6,E7,E8,M1,M2,M3,M4,M5,M6,CR1,CR2,EM1 endpoint;
+    class CS,FS,TOS,NS,AL,ESS,NMS service;
 ```

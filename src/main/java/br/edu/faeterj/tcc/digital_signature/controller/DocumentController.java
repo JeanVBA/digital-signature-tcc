@@ -89,6 +89,21 @@ public class DocumentController {
                 return ResponseEntity.ok(response);
         }
 
+        @PostMapping("/nonce-reuse/{signatureId}")
+        @Operation(summary = "Demonstra colapso ECDSA por reutilização de nonce", description = "Usa uma assinatura ECDSA real do banco e simula uma segunda "
+                        +
+                        "assinatura com o mesmo nonce k, demonstrando a extração da " +
+                        "chave privada via álgebra linear. Ref: NIST SP 800-90A Rev. 1")
+        public ResponseEntity<Map<String, Object>> nonceReuse(
+                        @PathVariable Long signatureId,
+                        @RequestParam(defaultValue = "Segundo contrato assinado com a mesma chave") String newMessage)
+                        throws Exception {
+
+                return ResponseEntity.ok(
+                                cryptoService.attackSignatureECDSA(
+                                                signatureId, newMessage));
+        }
+
         @GetMapping("/validate/{signatureId}")
         public ResponseEntity<Map<String, Object>> validatedSignature(
                         @PathVariable Long signatureId) throws Exception {

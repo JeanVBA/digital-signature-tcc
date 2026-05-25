@@ -1,0 +1,27 @@
+```mermaid
+sequenceDiagram
+
+actor Cliente
+participant EmailController
+participant EmailSignatureService
+participant SignatureRepository
+participant NetworkMetricsService
+participant JavaMailSender
+
+Cliente->>EmailController: POST /api/email/enviar/{id}
+EmailController->>EmailSignatureService: enviarDocumentoAssinado(id, receiver)
+
+EmailSignatureService->>SignatureRepository: findById(id)
+SignatureRepository-->>EmailSignatureService: SignatureEntity
+
+EmailSignatureService->>NetworkMetricsService: measureRealTransmission(...)
+NetworkMetricsService-->>EmailSignatureService: métricas de rede
+
+EmailSignatureService->>JavaMailSender: createMimeMessage()
+EmailSignatureService->>JavaMailSender: send(message)
+
+JavaMailSender-->>EmailSignatureService: email enviado
+
+EmailSignatureService-->>EmailController: response(Map)
+EmailController-->>Cliente: HTTP 200 OK
+```
