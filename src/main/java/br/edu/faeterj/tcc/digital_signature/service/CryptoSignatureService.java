@@ -396,8 +396,35 @@ public class CryptoSignatureService {
                                     " para confirmar que a assinatura forjada passa na validação.");
                 }
             });
+            // Adiciona os parâmetros matemáticos truncados para a Tabela do TCC/Dissertação
+            Map<String, String> mathParams = new LinkedHashMap<>();
+            mathParams.put("r", formatHexForThesis(rSimuladoUsado));
+            mathParams.put("s1", formatHexForThesis(s1Sim));
+            mathParams.put("s2", formatHexForThesis(s2));
+            mathParams.put("h1", formatHexForThesis(h1));
+            mathParams.put("h2", formatHexForThesis(h2));
+            mathParams.put("d_extraido", formatHexForThesis(dExtracted));
+            mathParams.put("d_real", formatHexForThesis(d));
+
+            report.put("thesisTableData", mathParams);
         }
         return report;
+    }
+
+    private String formatHexForThesis(BigInteger value) {
+        if (value == null)
+            return "N/A";
+
+        // Converte para hexadecimal em letras maiúsculas
+        String hex = value.toString(16).toUpperCase();
+
+        // Se por acaso for muito pequeno, retorna ele todo
+        if (hex.length() <= 12) {
+            return hex;
+        }
+
+        // Pega os 6 primeiros e os 6 últimos caracteres
+        return hex.substring(0, 6) + "..." + hex.substring(hex.length() - 6);
     }
 
     private BigInteger[] extractRSIntoDER(byte[] der) {

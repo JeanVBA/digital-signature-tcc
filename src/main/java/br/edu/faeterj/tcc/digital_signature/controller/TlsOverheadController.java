@@ -5,7 +5,6 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -44,7 +43,7 @@ public class TlsOverheadController {
     public ResponseEntity<Map<String, Object>> metricsByDocument(
             @PathVariable Long id) {
         return ResponseEntity.ok(
-                overheadService.calculatedMetricsByDocument(id));
+                overheadService.calculatedRealMetricsByDocument(id));
     }
 
     // Ranking dos documentos com maior overhead
@@ -54,11 +53,12 @@ public class TlsOverheadController {
                 overheadService.rankingOverheadByDocument());
     }
 
-    @GetMapping(value = "/overhead-tls/grafics", produces = MediaType.TEXT_HTML_VALUE)
-    public ResponseEntity<String> generatedGrafics() {
+    @GetMapping("/overhead-tls/grafics")
+    public ResponseEntity<Map<String, String>> generatedGrafics() { 
         Map<String, Object> data = overheadService.calculatedRealMetrics();
-        String html = overheadService.generatedHtmlGrafics(data);
-        return ResponseEntity.ok(html);
+        String caminhoArquivo = overheadService.generatedHtmlGrafics(data);
+    
+        return ResponseEntity.ok(Map.of("mensagem", caminhoArquivo));
     }
 
     @GetMapping("/network-conditions")
