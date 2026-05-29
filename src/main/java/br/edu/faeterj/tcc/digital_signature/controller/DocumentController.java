@@ -196,7 +196,7 @@ public class DocumentController {
 
         // ── Tentativa de falsificação ────────────────────────────────────
         @PostMapping("/falsificate-signature/{signatureId}")
-        @Operation(summary = "Tenta forjar a assinatura — sempre falha, salva no histórico")
+        @Operation(summary = "Tenta forjar a assinatura — salva no histórico")
         public ResponseEntity<Map<String, Object>> falsificateSignature(
                         @PathVariable Long signatureId) throws GeneralSecurityException {
 
