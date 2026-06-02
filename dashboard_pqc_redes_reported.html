@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PQC — Análise de Overhead de Rede</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+    :root {
+      --bg:#0a0e1a; --bg2:#111827; --bg3:#1a2235; --border:#1f2d45;
+      --ecdsa:#00d4aa; --ecdsa-dim:rgba(0,212,170,0.12);
+      --mldsa:#f97316; --mldsa-dim:rgba(249,115,22,0.12);
+      --text:#e2e8f0; --muted:#64748b; --accent:#3b82f6;
+    }
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;padding:2rem;}
+    h1{font-family:'Space Mono',monospace;font-size:clamp(1.3rem,3vw,1.9rem);line-height:1.2;}
+    h1 span{color:var(--accent);}
+    h2{font-family:'Space Mono',monospace;font-size:0.85rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:2rem 0 1rem;}
+    header{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:2rem;}
+
+    .kpi-container-title { font-family:'Space Mono',monospace; font-size:0.8rem; color:var(--accent); margin-bottom:0.5rem; text-transform:uppercase;}
+    .kpi-section { background: rgba(31,45,69,0.2); border: 1px dashed var(--border); border-radius:14px; padding:1rem; margin-bottom:1.5rem; }
+    .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.85rem;}
+    .kpi{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;position:relative;overflow:hidden;}
+    .kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+    .kpi.net::before{background:var(--accent);} .kpi.ec::before{background:var(--ecdsa);} .kpi.ml::before{background:var(--mldsa);} .kpi.cmp::before{background:#a855f7;}
+    .kpi label{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-family:'Space Mono',monospace;}
+    .kpi .val{font-size:1.4rem;font-weight:600;line-height:1.2;margin-top:4px;word-break:break-all;}
+    .kpi.ec .val{color:var(--ecdsa);} .kpi.ml .val{color:var(--mldsa);} .kpi.net .val{color:var(--accent);} .kpi.cmp .val{color:#a855f7;}
+    .kpi .sub{font-size:.7rem;color:var(--muted);margin-top:2px;}
+
+    .charts-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(450px,1fr));gap:1.1rem;margin-bottom:1.1rem;}
+    .chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:1.35rem;}
+    .chart-card.full{grid-column:1/-1;}
+
+    .doc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1rem;margin-bottom:1.5rem;}
+    .doc-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:1.25rem; display:flex; flex-direction:column;}
+    .doc-name{font-family:'Space Mono',monospace;font-size:1rem;color:var(--text);margin-bottom:.75rem;word-break:break-all;border-bottom:1px solid var(--border);padding-bottom:6px; font-weight:bold;}
+    .doc-row{display:flex;justify-content:space-between;font-size:.78rem;padding:6px 0;border-bottom:1px solid rgba(31,45,69,0.5);}
+    .doc-row:last-child{border-bottom:none;}
+    .doc-row span:first-child{color:var(--muted);}
+    .doc-row span:last-child{font-family:'Space Mono',monospace;font-size:.75rem; font-weight:bold;}
+
+    .e2e-box { background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 8px; padding: 12px; margin-top: 15px;}
+    .e2e-title { color: #d8b4fe; font-family: 'Space Mono', monospace; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 8px; font-weight: bold; }
+    .e2e-val { color: #fff; font-size: 1.1rem; font-weight: 600; display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;}
+    .e2e-sub { color: #a855f7; font-size: 0.75rem; }
+
+    .alg-tag{display:inline-block;font-size:.65rem;padding:3px 8px;border-radius:4px;font-family:'Space Mono',monospace;margin-bottom:8px;font-weight:bold; margin-top:12px;}
+    .alg-tag.ec{background:var(--ecdsa-dim);color:var(--ecdsa);border:1px solid var(--ecdsa);}
+    .alg-tag.ml{background:var(--mldsa-dim);color:var(--mldsa);border:1px solid var(--mldsa);}
+
+    table{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:.5rem;}
+    th{text-align:left;padding:10px;background:var(--bg3);color:var(--muted);font-family:'Space Mono',monospace;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;border:1px solid var(--border);}
+    td{padding:10px;border:1px solid var(--border);color:var(--text);vertical-align:middle;}
+    #error-msg{display:none;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:1.5rem;color:#fca5a5;font-family:'Space Mono',monospace;font-size:.85rem;margin-bottom:1rem;}
+  </style>
+</head>
+<body>
+<div id="error-msg"></div>
+<div id="app">
+  <header>
+    <div>
+      <h1>PQC <span>//</span> Análise End-to-End de Rede</h1>
+      <p style="color:var(--muted);font-size:.875rem;margin-top:6px">Mapeamento Dinâmico de Lotes: ECDSA vs ML-DSA-44</p>
+    </div>
+  </header>
+
+  <div class="kpi-section">
+    <div class="kpi-container-title">📊 Saturação de Janela (RFC 6928) - Limite de Lote Unitário</div>
+    <div class="kpi-grid" id="comp-kpis"></div>
+  </div>
+
+  <h2>Análise de Transferência em Lote (End-to-End) por Documento</h2>
+  <div class="doc-grid" id="doc-grid"></div>
+
+  <h2>Tabela Consolidada — Processos E2E</h2>
+  <div class="chart-card full" style="margin-bottom:1.5rem;overflow-x:auto">
+    <table id="tabela-consolidada"></table>
+  </div>
+</div>
+
+<script>
+function kb(b){return b>=1024*1024 ? (b/(1024*1024)).toFixed(2)+' MB' : (b>=1024?(b/1024).toFixed(2)+' KB':b+' B');}
+
+function render(D) {
+  if (!D || D.erro) {
+    document.getElementById('error-msg').style.display = 'block';
+    document.getElementById('error-msg').textContent = D ? D.erro : 'Dados inválidos.';
+    return;
+  }
+
+  const comp = D['comparative'] || {};
+  const docs = D['porDocumento'] || [];
+  const sat = comp.analiseSaturacaoJanela || {};
+
+  document.getElementById('comp-kpis').innerHTML = `
+    <div class="kpi ml" style="border-color:#f97316;">
+      <label style="color:#f97316;">Suporta 1 Voo (ML-DSA)</label>
+      <div class="val" style="color:#f97316;">${sat.limiteAssinaturasVooUnicoMLDSA || 3} sigs</div>
+      <div class="sub">Acumulados antes de travar rede</div>
+    </div>
+
+    <div class="kpi ec" style="border-color:#00d4aa;">
+      <label style="color:#00d4aa;">Suporta 1 Voo (ECDSA)</label>
+      <div class="val" style="color:#00d4aa;">${sat.limiteAssinaturasVooUnicoECDSA || 90} sigs</div>
+      <div class="sub">Acumulados antes de travar rede</div>
+    </div>
+
+    <div class="kpi net">
+      <label>Capacidade do 1º Voo</label>
+      <div class="val">${kb(sat.capacidadePrimeiroVooBytes || 14600)}</div>
+      <div class="sub">Initcwnd = 10 MSS</div>
+    </div>
+  `;
+
+  const gridDocs = document.getElementById('doc-grid');
+  gridDocs.innerHTML = '';
+
+  docs.forEach(d => {
+    let algosHtml = '';
+    if (d.porAlgoritmo) {
+      Object.entries(d.porAlgoritmo).forEach(([algName, algObj]) => {
+        const isEc = algName === 'ECDSA';
+        const cls = isEc ? 'ec' : 'ml';
+        const unit = algObj.handshake_unitario || {};
+
+        algosHtml += `
+          <span class="alg-tag ${cls}">${algName} (Lote: ${algObj.totalSignatures} sigs)</span>
+          <div class="doc-row"><span>Custo de 1 Assinatura</span><span>${kb(unit.totalBytes)} (${unit.voosNecessarios} voo)</span></div>
+        `;
+      });
+    }
+
+    const e2e = d.processo_e2e || {};
+
+    gridDocs.innerHTML += `
+      <div class="doc-card">
+        <div class="doc-name">📄 ${d.fileName}</div>
+        <div class="doc-row"><span>Tamanho PDF Puro</span><span>${kb(d.fileSizeBytes)}</span></div>
+        <div class="doc-row"><span>Total de Assinaturas</span><span>${d.totalSignatures}</span></div>
+
+        ${algosHtml}
+
+        <div class="e2e-box">
+          <div class="e2e-title">🚀 Processo End-to-End Acumulado</div>
+          <div class="doc-row" style="border-bottom:none; padding-top:0;">
+            <span style="color:#e9d5ff;">Volume Total (PDF + Sigs Base64)</span>
+            <span style="color:#fff;">${kb(e2e.totalEmailBase64Bytes)}</span>
+          </div>
+          <div class="doc-row" style="border-bottom:none;">
+            <span style="color:#e9d5ff;">Total de Pacotes Físicos TCP</span>
+            <span style="color:#fff;">${e2e.packagesTCP} pkt</span>
+          </div>
+
+          <div style="margin-top:10px; padding-top:10px; border-top:1px solid rgba(168,85,247,0.3);">
+            <div class="e2e-val">
+              <span style="font-size:0.8rem; color:#d8b4fe;">✈️ Voos TCP Acumulados</span>
+              <span>${e2e.totalVoosE2E} voos</span>
+            </div>
+            <div class="e2e-val">
+              <span style="font-size:0.8rem; color:#d8b4fe;">⏱️ Tempo Total E2E</span>
+              <span style="color:#fca5a5;">${Number(e2e.tempoTotalE2EMs).toFixed(2)} ms</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+
+  let thHtml = `
+    <tr>
+      <th>Documento</th>
+      <th>Algoritmo</th>
+      <th>Assinaturas</th>
+      <th>Volume E2E (Base64)</th>
+      <th>Pacotes TCP Totais</th>
+      <th>Voos Acumulados (Slow Start)</th>
+      <th>Tempo Total E2E</th>
+    </tr>
+  `;
+
+  docs.forEach(d => {
+    if (d.porAlgoritmo) {
+      const e2e = d.processo_e2e || {};
+      Object.entries(d.porAlgoritmo).forEach(([algName, algObj], idx) => {
+        thHtml += `
+          <tr>
+            <td style="font-weight:bold; font-family:'Space Mono',monospace;">${d.fileName}</td>
+            <td><span class="alg-tag ${algName === 'ECDSA' ? 'ec' : 'ml'}" style="margin:0;">${algName}</span></td>
+            <td style="font-family:'Space Mono',monospace;">${algObj.totalSignatures}</td>
+            <td style="font-family:'Space Mono',monospace;">${kb(e2e.totalEmailBase64Bytes)}</td>
+            <td style="font-family:'Space Mono',monospace;">${e2e.packagesTCP} pkt</td>
+            <td style="font-weight:bold; font-family:'Space Mono',monospace; color:#a855f7;">${e2e.totalVoosE2E} voos</td>
+            <td style="font-weight:bold; font-family:'Space Mono',monospace; color:#fca5a5;">${Number(e2e.tempoTotalE2EMs).toFixed(2)} ms</td>
+          </tr>
+        `;
+      });
+    }
+  });
+  document.getElementById('tabela-consolidada').innerHTML = thHtml;
+}
+
+try {
+  const DADOS_BACKEND = {"condicoesDeRede":{"host":"smtp.gmail.com:587","mtuReal":1500,"rttMedioMs":63.34431275,"rttMinMs":61.543058,"rttMaxMs":65.05042,"jitterMs":3.5073620000000005,"amostras":8,"fallback":false,"latenciaPorPacoteMicros":63344,"amostrasbrutas":[63.499143,65.05042,68.896328,64.703415,63.971496,62.13505,61.715531,59.722131,64.136389,61.543058]},"ML-DSA-44":{"algorithm":"ML-DSA-44","totalSignatures":734,"averageSignatureBytes":2420,"averagePublicKeyBytes":1334,"averageTotalHandshakeBytes":3754,"mtuUsado":1500,"averagePacketsNeeded":3,"percentageWithFragmentation":"100,00%","extraLatencyAverageMicros":0},"ECDSA":{"algorithm":"ECDSA","totalSignatures":2476,"averageSignatureBytes":70,"averagePublicKeyBytes":91,"averageTotalHandshakeBytes":161,"mtuUsado":1500,"averagePacketsNeeded":1,"percentageWithFragmentation":"0,00%","extraLatencyAverageMicros":0},"comparative":{"averageOverheadECDSABytes":161,"averageOverheadMLDSABytes":3754,"differenceAverageBytes":3592,"increaseFactorOverhead":"23,18x","extraPacketsAverageMLDSA":2,"latenciaHandshakeECDSAms":63.34431275,"latenciaHandshakeMLDSAms":63.34431275,"analiseSaturacaoJanela":{"pontoGargaloMLDSA":4,"limiteAssinaturasVooUnicoECDSA":90,"capacidadePrimeiroVooBytes":14600,"limiteAssinaturasVooUnicoMLDSA":3,"pontoGargaloECDSA":91}},"porDocumento":[{"documentId":1,"fileName":"NIST.IR.8320.pdf","fileType":"application/pdf","fileSizeBytes":1984646,"totalSignatures":500,"porAlgoritmo":{"ML-DSA-44":{"totalSignatures":500,"handshake_unitario":{"latencyExtraMs":63.34431275,"totalBytes":3754,"voosNecessarios":1,"packagesTCP":3},"handshake_acumulado":{"emailBase64Bytes":2502667,"totalHandshakeBytes":1877000}}},"processo_e2e":{"totalVoosE2E":9,"tempoTotalE2EMs":570.09881475,"packagesTCP":3527,"totalEmailBase64Bytes":5148862}},{"documentId":2,"fileName":"NIST.SP.800-22r1a.pdf","fileType":"application/pdf","fileSizeBytes":7583475,"totalSignatures":1018,"porAlgoritmo":{"ML-DSA-44":{"totalSignatures":234,"handshake_unitario":{"latencyExtraMs":63.34431275,"totalBytes":3754,"voosNecessarios":1,"packagesTCP":3},"handshake_acumulado":{"emailBase64Bytes":1171248,"totalHandshakeBytes":878436}},"ECDSA":{"totalSignatures":784,"handshake_unitario":{"latencyExtraMs":63.34431275,"totalBytes":162,"voosNecessarios":1,"packagesTCP":1},"handshake_acumulado":{"emailBase64Bytes":169316,"totalHandshakeBytes":126987}}},"processo_e2e":{"totalVoosE2E":10,"tempoTotalE2EMs":633.4431275,"packagesTCP":7844,"totalEmailBase64Bytes":11451864}},{"documentId":3,"fileName":"NIST.IR.8547.pdf","fileType":"application/pdf","fileSizeBytes":722379,"totalSignatures":1419,"porAlgoritmo":{"ECDSA":{"totalSignatures":1419,"handshake_unitario":{"latencyExtraMs":63.34431275,"totalBytes":162,"voosNecessarios":1,"packagesTCP":1},"handshake_acumulado":{"emailBase64Bytes":306455,"totalHandshakeBytes":229841}}},"processo_e2e":{"totalVoosE2E":7,"tempoTotalE2EMs":443.41018925000003,"packagesTCP":870,"totalEmailBase64Bytes":1269627}},{"documentId":4,"fileName":"NIST.FIPS.204.pdf","fileType":"application/pdf","fileSizeBytes":3291746,"totalSignatures":273,"porAlgoritmo":{"ECDSA":{"totalSignatures":273,"handshake_unitario":{"latencyExtraMs":63.34431275,"totalBytes":162,"voosNecessarios":1,"packagesTCP":1},"handshake_acumulado":{"emailBase64Bytes":58972,"totalHandshakeBytes":44229}}},"processo_e2e":{"totalVoosE2E":9,"tempoTotalE2EMs":570.09881475,"packagesTCP":3047,"totalEmailBase64Bytes":4447967}}],"totalDocuments":4,"totalSignatures":3210};
+  render(DADOS_BACKEND);
+} catch(err) {
+  const el = document.getElementById('error-msg');
+  el.style.display = 'block';
+  el.textContent = 'Erro crítico ao injetar JSON: ' + err.message;
+}
+</script>
+</body>
+</html>

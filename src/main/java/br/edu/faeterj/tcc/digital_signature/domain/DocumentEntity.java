@@ -34,6 +34,6 @@ public class DocumentEntity {
     @Column(nullable = false)
     private LocalDateTime createdAt;
     
-    @OneToMany(mappedBy = "document", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @OneToMany(mappedBy = "document", cascade = CascadeType.ALL, fetch = FetchType.EAGER)
     private List<SignatureEntity> signatures;
 }

@@ -20,13 +20,13 @@ public class EmailController {
 
     private final EmailSignatureService emailService;
 
-    @PostMapping("/enviar/{signatureId}")
+    @PostMapping("/send/{documentId}")
     @Operation(summary = "Envia documento assinado por email e retorna métricas reais de rede")
     public ResponseEntity<Map<String, Object>> send(
-            @PathVariable Long signatureId,
+            @PathVariable Long documentId,
             @RequestParam String receiver) throws Exception {
 
         return ResponseEntity.ok(
-            emailService.enviarDocumentoAssinado(signatureId, receiver));
+            emailService.sendDocumentById(documentId, receiver));
     }
 }

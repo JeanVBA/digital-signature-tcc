@@ -40,9 +40,7 @@ public class DocumentController {
                         @RequestParam(value = "algorithm", defaultValue = "ML-DSA") String algorithm)
                         throws Exception {
 
-                // 1. Busca documento existente pelo nome — ou cria um novo
                 String fileName = file.getOriginalFilename();
-
                 DocumentEntity doc = cryptoService.findDocumentByName(fileName)
                                 .orElseGet(() -> {
                                         DocumentEntity novo = new DocumentEntity();
@@ -56,8 +54,6 @@ public class DocumentController {
                                         }
                                         return cryptoService.documentSave(novo);
                                 });
-
-                // 2. Assina e mede o tempo
                 long start = System.nanoTime();
 
                 SignatureEntity result = switch (algorithm.toUpperCase()) {
@@ -68,8 +64,69 @@ public class DocumentController {
                 };
 
                 long fim = System.nanoTime();
+                int totalAssinaturas = cryptoService.findSignatureByDocumentId(doc.getId()).size();
 
-                // 3. Quantas assinaturas o documento tem agora
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("signatureId", result.getId());
+                response.put("documentId", doc.getId());
+                response.put("archive", fileName);
+                response.put("documentoEraExistente", totalAssinaturas > 1);
+                response.put("totalAssinaturasNoDocumento", totalAssinaturas);
+                response.put("algorithm", result.getTypeAlgorithm());
+                response.put("signatureSizeBytes", result.getSignatureBytes().length);
+                response.put("publicKeySizeBytes", result.getPublicKeyBytes().length);
+                response.put("ipFragmentation", result.getPublicKeyBytes().length
+                                + result.getSignatureBytes().length > 1500);
+                response.put("isValid", result.isValid());
+                response.put("executionTimeMs", (fim - start) / 1_000_000.0);
+
+                return ResponseEntity.ok(response);
+        }
+
+        @Operation(summary = "Assina um documento PDF ou Word multiplas vezes")
+        @PostMapping(value = "/sign-multiples", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+        public ResponseEntity<?> signMultipleDocument(
+                        @RequestPart("file") MultipartFile file,
+                        @RequestParam(value = "algorithm", defaultValue = "ML-DSA") String algorithm,
+                        @RequestParam(value = "iterations", defaultValue = "1000") int iterations)
+                        throws Exception {
+
+                String fileName = file.getOriginalFilename();
+                DocumentEntity doc = cryptoService.findDocumentByName(fileName)
+                                .orElseGet(() -> {
+                                        DocumentEntity novo = new DocumentEntity();
+                                        novo.setName(fileName);
+                                        novo.setType(file.getContentType());
+                                        novo.setCreatedAt(LocalDateTime.now());
+                                        try {
+                                                novo.setContent(file.getBytes());
+                                        } catch (IOException e) {
+                                                throw new RuntimeException("Erro ao ler bytes do arquivo", e);
+                                        }
+                                        return cryptoService.documentSave(novo);
+                                });
+                long start = System.nanoTime();
+
+                SignatureEntity result = switch (algorithm.toUpperCase()) {
+                        case "ML-DSA" -> {
+                                SignatureEntity lastSignature = null;
+                                for (int i = 0; i < iterations; i++) {
+                                        lastSignature = cryptoService.signWithMLDSA(doc);
+                                }
+                                yield lastSignature; // Retorna o valor para 'result'
+                        }
+                        case "ECDSA" -> {
+                                SignatureEntity lastSignature = null;
+                                for (int i = 0; i < iterations; i++) {
+                                        lastSignature = cryptoService.signWithECDSA(doc);
+                                }
+                                yield lastSignature; // Retorna o valor para 'result'
+                        }
+                        default -> throw new IllegalArgumentException(
+                                        "Algorithm inválido. Use: ECDSA ou ML-DSA");
+                };
+
+                long fim = System.nanoTime();
                 int totalAssinaturas = cryptoService.findSignatureByDocumentId(doc.getId()).size();
 
                 Map<String, Object> response = new LinkedHashMap<>();

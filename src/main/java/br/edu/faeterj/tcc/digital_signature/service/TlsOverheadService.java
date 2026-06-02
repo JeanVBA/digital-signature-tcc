@@ -27,34 +27,70 @@ public class TlsOverheadService {
   private final DocumentRepository documentRepository;
   private final NetworkMeasurementService networkService;
 
+  private static final int INIT_CWND = 10; 
+  private static final int TCP_IP_HEADER_OVERHEAD = 40;
+
+  private int simulateTcpFlights(long totalBytes, int mtu) {
+      int mss = mtu - TCP_IP_HEADER_OVERHEAD;
+      if (mss <= 0) mss = 1460; 
+      
+      long totalPackets = (long) Math.ceil((double) totalBytes / mss);
+      if (totalPackets <= 0) return 0;
+
+      long packetsSent = 0;
+      long currentCwnd = INIT_CWND;
+      int flights = 0;
+
+      while (packetsSent < totalPackets) {
+          flights++;
+          long packetsInFlight = Math.min(currentCwnd, totalPackets - packetsSent);
+          packetsSent += packetsInFlight;
+          currentCwnd *= 2; 
+      }
+      return flights;
+  }
+
+  private int calculateTcpPackets(long totalBytes, int mtu) {
+      int mss = mtu - TCP_IP_HEADER_OVERHEAD;
+      if (mss <= 0) mss = 1460;
+      return (int) Math.ceil((double) totalBytes / mss);
+  }
+
   public Map<String, Object> calculatedRealMetrics() {
     List<SignatureEntity> allSignatures = signatureRepository.findAll();
     if (allSignatures.isEmpty()) {
-      return Map.of("erro", "Nenhuma assinatura encontrada.");
+        return Map.of("erro", "Nenhuma assinatura encontrada.");
     }
 
     int mtuReal = networkService.discoverRealMTU();
-    Map<String, Object> latencia = networkService.measureLatencyTCP();
-    double rttMs = latencia.containsKey("latenciaMediaMs")
-        ? (double) latencia.get("latenciaMediaMs")
-        : 1.0;
-    int latenciaPorPacoteMicros = (int) (rttMs * 1000);
+    Map<String, Object> latObj = networkService.measureLatencyTCP();
+
+    double rttMs = latObj.containsKey("latencyMediaMs")
+        ? ((Number) latObj.get("latencyMediaMs")).doubleValue()
+        : 80.0;
+
+    boolean fallback = Boolean.TRUE.equals(latObj.get("fallback"));
 
     Map<String, List<SignatureEntity>> porAlgoritmo = allSignatures.stream()
         .collect(Collectors.groupingBy(SignatureEntity::getTypeAlgorithm));
 
     Map<String, Object> result = new LinkedHashMap<>();
 
-    result.put("condicoesDeRede", Map.of(
-        "mtuReal", mtuReal,
-        "rttMedioMs", rttMs,
-        "latenciaPorPacoteMicros", latenciaPorPacoteMicros,
-        "hostMedido", latencia.getOrDefault("hostMedido", "N/A"),
-        "amostras", latencia.getOrDefault("amostras", 0),
-        "jitterMs", latencia.getOrDefault("jitterMs", 0.0)));
+    result.put("condicoesDeRede", new LinkedHashMap<String, Object>() {{
+        put("host",                   latObj.getOrDefault("host", "N/A"));
+        put("mtuReal",                mtuReal);
+        put("rttMedioMs",             rttMs);
+        put("rttMinMs",               latObj.getOrDefault("latencyMinMs", rttMs));
+        put("rttMaxMs",               latObj.getOrDefault("latencyMaxMs", rttMs));
+        put("jitterMs",               latObj.getOrDefault("jitterMs", 0.0));
+        put("amostras",               latObj.getOrDefault("amostras", 0));
+        put("fallback",               fallback);
+        put("latenciaPorPacoteMicros",(int)(rttMs * 1000));
+        put("amostrasbrutas",         latObj.getOrDefault("amostrasbrutas", List.of()));
+    }});
 
     porAlgoritmo.forEach((algoritmo, lista) -> result.put(algoritmo,
-        calculatedMetricsByGroup(algoritmo, lista, mtuReal, latenciaPorPacoteMicros)));
+        calculatedMetricsByGroup(algoritmo, lista, mtuReal, rttMs)));
 
     if (porAlgoritmo.containsKey("ECDSA") && porAlgoritmo.containsKey("ML-DSA-44")) {
       result.put("comparative", calculatedComparative(
@@ -70,8 +106,7 @@ public class TlsOverheadService {
   }
 
   private Map<String, Object> calculatedMetricsByGroup(
-      String algorithm, List<SignatureEntity> lista,
-      int mtu, int latenciaPorPacoteMicros) {
+      String algorithm, List<SignatureEntity> lista, int mtu, double rttMs) {
 
     IntSummaryStatistics statsSig = lista.stream()
         .collect(Collectors.summarizingInt(s -> s.getSignatureBytes().length));
@@ -81,7 +116,9 @@ public class TlsOverheadService {
     int mediaTotal = (int) (statsSig.getAverage() + statsKey.getAverage());
     int maxTotal = statsSig.getMax() + statsKey.getMax();
     int minTotal = statsSig.getMin() + statsKey.getMin();
-    int pacotes = calculatedPackets(mediaTotal, mtu);
+    
+    int pacotes = calculateTcpPackets(mediaTotal, mtu);
+    int flights = simulateTcpFlights(mediaTotal, mtu);
 
     long comFragmentacao = lista.stream()
         .filter(s -> s.getPublicKeyBytes().length + s.getSignatureBytes().length > mtu)
@@ -95,43 +132,40 @@ public class TlsOverheadService {
     m.put("averageSignatureBytes", (int) statsSig.getAverage());
     m.put("averagePublicKeyBytes", (int) statsKey.getAverage());
     m.put("averageTotalHandshakeBytes", mediaTotal);
-    m.put("maxTotalHandshakeBytes", maxTotal);
-    m.put("minTotalHandshakeBytes", minTotal);
     m.put("mtuUsado", mtu);
     m.put("averagePacketsNeeded", pacotes);
-    m.put("tamanhoFixoPorAlgoritmo", tamanhoFixo);
     m.put("percentageWithFragmentation",
         String.format("%.2f%%", (comFragmentacao * 100.0) / lista.size()));
 
-    if (tamanhoFixo) {
-      m.put("notaFragmentacao",
-          comFragmentacao == lista.size()
-              ? String.format("100%% das assinaturas fragmentam — tamanho fixo (%d bytes) sempre excede o MTU real de %d bytes.", maxTotal, mtu)
-              : String.format("0%% das assinaturas fragmentam — tamanho fixo (%d bytes) está abaixo do MTU real de %d bytes.", maxTotal, mtu));
-    }
-
-    m.put("extraLatencyAverageMicros", Math.max(0, pacotes - 1) * latenciaPorPacoteMicros);
-    m.put("latenciaBaseadaEmMedicaoReal", true);
+    long extraLatencyMicros = (long) (Math.max(0, flights - 1) * rttMs * 1000);
+    m.put("extraLatencyAverageMicros", extraLatencyMicros);
 
     return m;
   }
 
   private Map<String, Object> calculatedComparative(
-      List<SignatureEntity> listaEc, List<SignatureEntity> listaMl,
-      int mtu, double rttMs) {
+      List<SignatureEntity> listaEc, List<SignatureEntity> listaMl, int mtu, double rttMs) {
 
     double mediaEc = listaEc.stream()
-        .mapToInt(s -> s.getPublicKeyBytes().length + s.getSignatureBytes().length)
-        .average().orElse(1);
+        .mapToInt(s -> s.getPublicKeyBytes().length + s.getSignatureBytes().length).average().orElse(1);
     double mediaMl = listaMl.stream()
-        .mapToInt(s -> s.getPublicKeyBytes().length + s.getSignatureBytes().length)
-        .average().orElse(0);
+        .mapToInt(s -> s.getPublicKeyBytes().length + s.getSignatureBytes().length).average().orElse(0);
 
-    int pacotesEc = calculatedPackets((int) mediaEc, mtu);
-    int pacotesMl = calculatedPackets((int) mediaMl, mtu);
+    int pacotesEc = calculateTcpPackets((int) mediaEc, mtu);
+    int pacotesMl = calculateTcpPackets((int) mediaMl, mtu);
 
-    double latenciaEcMs = pacotesEc * rttMs;
-    double latenciaMlMs = pacotesMl * rttMs;
+    int flightsEc = simulateTcpFlights((int) mediaEc, mtu);
+    int flightsMl = simulateTcpFlights((int) mediaMl, mtu);
+
+    double latenciaEcMs = flightsEc * rttMs;
+    double latenciaMlMs = flightsMl * rttMs;
+
+    int mss = mtu - TCP_IP_HEADER_OVERHEAD;
+    if (mss <= 0) mss = 1460;
+    int capacidadeVoo1Bytes = INIT_CWND * mss;
+    
+    int maxSigsEcdsaVoo1 = capacidadeVoo1Bytes / (int) mediaEc;
+    int maxSigsMldsaVoo1 = capacidadeVoo1Bytes / (int) mediaMl;
 
     Map<String, Object> c = new LinkedHashMap<>();
     c.put("averageOverheadECDSABytes", (int) mediaEc);
@@ -141,18 +175,16 @@ public class TlsOverheadService {
     c.put("extraPacketsAverageMLDSA", pacotesMl - pacotesEc);
     c.put("latenciaHandshakeECDSAms", latenciaEcMs);
     c.put("latenciaHandshakeMLDSAms", latenciaMlMs);
-    c.put("latenciaExtraRealMs", latenciaMlMs - latenciaEcMs);
-    c.put("fatorAumentoLatencia", String.format("%.1fx", latenciaMlMs / latenciaEcMs));
-    c.put("mtuUsadoNaAnalise", mtu);
-    c.put("rttUsadoMs", rttMs);
-    c.put("conclusion", String.format(
-        "Com MTU real de %d bytes e RTT médio de %.2fms, o handshake ML-DSA-44 exige %d pacote(s) TCP contra %d do ECDSA, resultando em %.2fms de latência extra por conexão (%.1fx mais lento).",
-        mtu, rttMs, pacotesMl, pacotesEc, latenciaMlMs - latenciaEcMs, latenciaMlMs / latenciaEcMs));
-    return c;
-  }
+    
+    c.put("analiseSaturacaoJanela", Map.of(
+        "capacidadePrimeiroVooBytes", capacidadeVoo1Bytes,
+        "limiteAssinaturasVooUnicoECDSA", maxSigsEcdsaVoo1,
+        "limiteAssinaturasVooUnicoMLDSA", maxSigsMldsaVoo1,
+        "pontoGargaloMLDSA", maxSigsMldsaVoo1 + 1,
+        "pontoGargaloECDSA", maxSigsEcdsaVoo1 + 1
+    ));
 
-  private int calculatedPackets(int totalBytes, int mtu) {
-    return (int) Math.ceil((double) totalBytes / mtu);
+    return c;
   }
 
   private List<Map<String, Object>> calculatedPerDocument(List<SignatureEntity> all, int mtu, double rttMs) {
@@ -179,63 +211,43 @@ public class TlsOverheadService {
             int unitSigBytes = exemplo.getSignatureBytes().length;
             int unitKeyBytes = exemplo.getPublicKeyBytes().length;
             int unitHandshake = unitSigBytes + unitKeyBytes;
-            int unitPackages = (int) Math.ceil((double) unitHandshake / mtu);
-            double unitLat = Math.max(0, unitPackages - 1) * rttMs;
-
+            
             int acumSigBytes = algSigs.stream().mapToInt(s -> s.getSignatureBytes().length).sum();
             int acumKeyBytes = algSigs.stream().mapToInt(s -> s.getPublicKeyBytes().length).sum();
             int acumHandshake = acumSigBytes + acumKeyBytes;
 
-            int sumRealPackages = unitPackages * algSigs.size();
-            double acumLatReal = unitLat * algSigs.size();
-
-            int emailUnitBytes = (int) Math.ceil(unitHandshake * 4.0 / 3);
-            int emailAcumBytes = (int) Math.ceil(acumHandshake * 4.0 / 3);
-
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("totalSignatures", algSigs.size());
             m.put("handshake_unitario", Map.of(
-                "description", "Custo de UM handshake TLS com este algoritmo",
-                "signatureBytes", unitSigBytes,
-                "publicKeyBytes", unitKeyBytes,
                 "totalBytes", unitHandshake,
-                "packagesTCP", unitPackages,
-                "fragmentationIP", unitHandshake > mtu,
-                "latencyExtraMs", unitLat,
-                "emailBase64Bytes", emailUnitBytes
+                "packagesTCP", calculateTcpPackets(unitHandshake, mtu),
+                "voosNecessarios", simulateTcpFlights(unitHandshake, mtu),
+                "latencyExtraMs", simulateTcpFlights(unitHandshake, mtu) * rttMs
             ));
-
             m.put("handshake_acumulado", Map.of(
-                "description", algSigs.size() + " handshakes sequenciais (todas as assinaturas)",
-                "totalSignatureBytes", acumSigBytes,
-                "totalPublicKeyBytes", acumKeyBytes,
                 "totalHandshakeBytes", acumHandshake,
-                "packagesTotalTCP", sumRealPackages,
-                "latencyExtraMsTotal", acumLatReal,
-                "emailBase64Bytes", emailAcumBytes,
-                "nota", "Cada handshake ocorre separadamente — " + unitPackages + " pacote(s) × " + algSigs.size() + " assinaturas"
+                "emailBase64Bytes", (int) Math.ceil(acumHandshake * 4.0 / 3)
             ));
-
             porAlgMetrics.put(alg, m);
         });
 
         docData.put("porAlgoritmo", porAlgMetrics);
 
+        // --- CÁLCULO E2E (END-TO-END) ---
         int docBytes = doc.getContent().length;
         int allSigBytes = sigs.stream()
-            .mapToInt(s -> s.getSignatureBytes().length + s.getPublicKeyBytes().length)
-            .sum();
-        int emailCompleto = (int) Math.ceil((docBytes + allSigBytes) * 4.0 / 3);
-        int packageMail = (int) Math.ceil((double) emailCompleto / mtu);
-        double latMail = Math.max(0, packageMail - 1) * rttMs;
+            .mapToInt(s -> s.getSignatureBytes().length + s.getPublicKeyBytes().length).sum();
+        
+        int emailCompletoBytes = (int) Math.ceil((docBytes + allSigBytes) * 4.0 / 3);
+        int packageMail = calculateTcpPackets(emailCompletoBytes, mtu);
+        int emailFlights = simulateTcpFlights(emailCompletoBytes, mtu);
+        double latMail = emailFlights * rttMs;
 
-        docData.put("envio_email_completo", Map.of(
-            "description", "Documento + todas as assinaturas em um único e-mail",
-            "fileSizeBytes", docBytes,
-            "allSignaturesBytes", allSigBytes,
-            "totalEmailBase64Bytes", emailCompleto,
+        docData.put("processo_e2e", Map.of(
+            "totalEmailBase64Bytes", emailCompletoBytes,
             "packagesTCP", packageMail,
-            "latencyExtraMs", latMail
+            "totalVoosE2E", emailFlights,
+            "tempoTotalE2EMs", latMail
         ));
 
         return docData;
@@ -273,12 +285,7 @@ public class TlsOverheadService {
             h1{font-family:'Space Mono',monospace;font-size:clamp(1.3rem,3vw,1.9rem);line-height:1.2;}
             h1 span{color:var(--accent);}
             h2{font-family:'Space Mono',monospace;font-size:0.85rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:2rem 0 1rem;}
-            h3{font-family:'Space Mono',monospace;font-size:0.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:.75rem;display:flex;align-items:center;gap:8px;}
-            h3::before{content:'';display:inline-block;width:7px;height:7px;border-radius:2px;background:var(--accent);}
             header{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;margin-bottom:2rem;}
-            .badge-live{display:inline-flex;align-items:center;gap:6px;background:var(--bg3);border:1px solid var(--border);border-radius:999px;padding:5px 12px;font-size:.75rem;font-family:'Space Mono',monospace;color:var(--muted);}
-            .dot{width:7px;height:7px;border-radius:50%;background:var(--ecdsa);animation:pulse 1.8s ease-in-out infinite;}
-            @keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.4;transform:scale(.7);}}
             
             .kpi-container-title { font-family:'Space Mono',monospace; font-size:0.8rem; color:var(--accent); margin-bottom:0.5rem; text-transform:uppercase;}
             .kpi-section { background: rgba(31,45,69,0.2); border: 1px dashed var(--border); border-radius:14px; padding:1rem; margin-bottom:1.5rem; }
@@ -294,25 +301,27 @@ public class TlsOverheadService {
             .charts-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(450px,1fr));gap:1.1rem;margin-bottom:1.1rem;}
             .chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:1.35rem;}
             .chart-card.full{grid-column:1/-1;}
-            .banner{background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.3);border-radius:10px;padding:.85rem 1.25rem;display:flex;align-items:center;gap:10px;margin-bottom:1.1rem;font-size:.85rem;color:#fed7aa;}
             
             .doc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1rem;margin-bottom:1.5rem;}
-            .doc-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:1.25rem;}
-            .doc-name{font-family:'Space Mono',monospace;font-size:.85rem;color:var(--text);margin-bottom:.75rem;word-break:break-all;border-bottom:1px solid var(--border);padding-bottom:4px;}
-            .doc-row{display:flex;justify-content:space-between;font-size:.78rem;padding:5px 0;border-bottom:1px solid var(--border);}
+            .doc-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:1.25rem; display:flex; flex-direction:column;}
+            .doc-name{font-family:'Space Mono',monospace;font-size:1rem;color:var(--text);margin-bottom:.75rem;word-break:break-all;border-bottom:1px solid var(--border);padding-bottom:6px; font-weight:bold;}
+            .doc-row{display:flex;justify-content:space-between;font-size:.78rem;padding:6px 0;border-bottom:1px solid rgba(31,45,69,0.5);}
             .doc-row:last-child{border-bottom:none;}
             .doc-row span:first-child{color:var(--muted);}
-            .doc-row span:last-child{font-family:'Space Mono',monospace;font-size:.75rem;}
-            .alg-tag{display:inline-block;font-size:.65rem;padding:2px 7px;border-radius:4px;font-family:'Space Mono',monospace;margin-bottom:6px;font-weight:bold;}
+            .doc-row span:last-child{font-family:'Space Mono',monospace;font-size:.75rem; font-weight:bold;}
+            
+            .e2e-box { background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 8px; padding: 12px; margin-top: 15px;}
+            .e2e-title { color: #d8b4fe; font-family: 'Space Mono', monospace; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 8px; font-weight: bold; }
+            .e2e-val { color: #fff; font-size: 1.1rem; font-weight: 600; display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;}
+            .e2e-sub { color: #a855f7; font-size: 0.75rem; }
+            
+            .alg-tag{display:inline-block;font-size:.65rem;padding:3px 8px;border-radius:4px;font-family:'Space Mono',monospace;margin-bottom:8px;font-weight:bold; margin-top:12px;}
             .alg-tag.ec{background:var(--ecdsa-dim);color:var(--ecdsa);border:1px solid var(--ecdsa);}
             .alg-tag.ml{background:var(--mldsa-dim);color:var(--mldsa);border:1px solid var(--mldsa);}
-            .frag-warn{color:#f97316;font-size:.7rem;margin-top:4px;font-family:'Space Mono',monospace;}
             
             table{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:.5rem;}
             th{text-align:left;padding:10px;background:var(--bg3);color:var(--muted);font-family:'Space Mono',monospace;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;border:1px solid var(--border);}
             td{padding:10px;border:1px solid var(--border);color:var(--text);vertical-align:middle;}
-            .tval{font-family:'Space Mono',monospace;font-size:.75rem;}
-            footer{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);font-size:.72rem;color:var(--muted);font-family:'Space Mono',monospace;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;}
             #error-msg{display:none;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:1.5rem;color:#fca5a5;font-family:'Space Mono',monospace;font-size:.85rem;margin-bottom:1rem;}
           </style>
         </head>
@@ -321,67 +330,27 @@ public class TlsOverheadService {
         <div id="app">
           <header>
             <div>
-              <h1>PQC <span>//</span> Análise de Custo Real de Rede</h1>
-              <p style="color:var(--muted);font-size:.875rem;margin-top:6px">Mapeamento de Sobrecarga: ECDSA vs ML-DSA-44</p>
+              <h1>PQC <span>//</span> Análise End-to-End de Rede</h1>
+              <p style="color:var(--muted);font-size:.875rem;margin-top:6px">Mapeamento Dinâmico de Lotes: ECDSA vs ML-DSA-44</p>
             </div>
-            <div class="badge-live"><div class="dot"></div><span id="lbl-total">Carregando métricas...</span></div>
           </header>
 
-          <h2>Painel Executivo — Cards Principais (Métricas Reais)</h2>
-          
           <div class="kpi-section">
-            <div class="kpi-container-title">📡 Condições Atuais da Infraestrutura de Rede</div>
-            <div class="kpi-grid" id="net-kpis"></div>
-          </div>
-
-          <div class="kpi-section">
-            <div class="kpi-container-title">🔒 Algoritmo Legado: ECDSA (secp256r1)</div>
-            <div class="kpi-grid" id="ecdsa-kpis"></div>
-          </div>
-
-          <div class="kpi-section">
-            <div class="kpi-container-title">🚀 Algoritmo Pós-Quântico: ML-DSA-44 (NIST SP 800-204)</div>
-            <div class="kpi-grid" id="mldsa-kpis"></div>
-          </div>
-
-          <div class="kpi-section">
-            <div class="kpi-container-title">📊 Análise Comparativa da Transição Estática</div>
+            <div class="kpi-container-title">📊 Saturação de Janela (RFC 6928) - Limite de Lote Unitário</div>
             <div class="kpi-grid" id="comp-kpis"></div>
           </div>
 
-          <div class="banner" id="banner-frag" style="display:none">
-            ⚠️ <span id="banner-txt"></span>
-          </div>
-
-          <h2>Gráficos de Escalonamento e Comparação Avançada</h2>
-          <div class="charts-grid">
-            <div class="chart-card full">
-              <h3>Análise Criptográfica de Envio de E-mail Completo (Tamanho Total por Documento)</h3>
-              <canvas id="c-email-completo"></canvas>
-            </div>
-            <div class="chart-card full">
-              <h3>Mapeamento de Radar Espacial — Envio do E-mail Completo (Tamanho Real Base64 vs Pacotes TCP)</h3>
-              <canvas id="c-radar-pqc"></canvas>
-            </div>
-          </div>
-
-          <h2>Por Documento — Impacto Individual na Rede</h2>
+          <h2>Análise de Transferência em Lote (End-to-End) por Documento</h2>
           <div class="doc-grid" id="doc-grid"></div>
 
-          <h2>Tabela Consolidada — Handshake Acumulado por Documento</h2>
+          <h2>Tabela Consolidada — Processos E2E</h2>
           <div class="chart-card full" style="margin-bottom:1.5rem;overflow-x:auto">
             <table id="tabela-consolidada"></table>
           </div>
-
-          <footer>
-            <span>FAETERJ — TCC Criptografia Pós-Quântica</span>
-            <span id="lbl-ts"></span>
-          </footer>
         </div>
 
         <script>
-        function kb(b){return b>=1024?(b/1024).toFixed(2)+' KB':b+' B';}
-        function fmt(v){return typeof v==='number'?v.toLocaleString('pt-BR'):v;}
+        function kb(b){return b>=1024*1024 ? (b/(1024*1024)).toFixed(2)+' MB' : (b>=1024?(b/1024).toFixed(2)+' KB':b+' B');}
 
         function render(D) {
           if (!D || D.erro) {
@@ -390,54 +359,30 @@ public class TlsOverheadService {
             return;
           }
 
-          const net = D['condicoesDeRede'] || {};
-          const ec = D['ECDSA'] || {};
-          const ml = D['ML-DSA-44'] || {};
           const comp = D['comparative'] || {};
           const docs = D['porDocumento'] || [];
+          const sat = comp.analiseSaturacaoJanela || {};
 
-          document.getElementById('lbl-total').textContent = `${D.totalSignatures || 0} assinaturas / ${D.totalDocuments || 0} documentos`;
-          document.getElementById('lbl-ts').textContent = 'Gerado em: ' + new Date().toLocaleString('pt-BR');
-
-          // 1. RENDERIZAR CARD PRINCIPAL: CONDIÇÃO DE REDE
-          document.getElementById('net-kpis').innerHTML = `
-            <div class="kpi net"><label>Host Medido</label><div class="val">${net.hostMedido || 'N/A'}</div><div class="sub">Destino ICMP/TCP</div></div>
-            <div class="kpi net"><label>MTU Real da Rede</label><div class="val">${net.mtuReal || 1500} bytes</div><div class="sub">Tamanho máximo do pacote</div></div>
-            <div class="kpi net"><label>RTT Médio</label><div class="val">${net.rttMedioMs || 0} ms</div><div class="sub">Tempo de ida e volta</div></div>
-            <div class="kpi net"><label>Jitter de Rede</label><div class="val">${Number(net.jitterMs || 0).toFixed(2)} ms</div><div class="sub">Variação estatística da latência</div></div>
-          `;
-
-          // 2. RENDERIZAR CARD PRINCIPAL: ECDSA
-          document.getElementById('ecdsa-kpis').innerHTML = `
-            <div class="kpi ec"><label>Média Chave Pública</label><div class="val">${kb(ec.averagePublicKeyBytes || 0)}</div><div class="sub">Bytes de chave pública</div></div>
-            <div class="kpi ec"><label>Média Assinatura</label><div class="val">${kb(ec.averageSignatureBytes || 0)}</div><div class="sub">Bytes de assinatura estrutural</div></div>
-            <div class="kpi ec"><label>Total Handshake TLS</label><div class="val">${kb(ec.averageTotalHandshakeBytes || 0)}</div><div class="sub">Média combinada por sessão</div></div>
-            <div class="kpi ec"><label>Pacotes TCP Médios</label><div class="val">${ec.averagePacketsNeeded || 0} pkt</div><div class="sub">Sem fragmentação IP detectada</div></div>
-          `;
-
-          // 3. RENDERIZAR CARD PRINCIPAL: ML-DSA-44
-          document.getElementById('mldsa-kpis').innerHTML = `
-            <div class="kpi ml"><label>Média Chave Pública</label><div class="val">${kb(ml.averagePublicKeyBytes || 0)}</div><div class="sub">Bytes de chave pós-quântica</div></div>
-            <div class="kpi ml"><label>Média Assinatura</label><div class="val">${kb(ml.averageSignatureBytes || 0)}</div><div class="sub">Bytes de assinatura estrutural</div></div>
-            <div class="kpi ml"><label>Total Handshake TLS</label><div class="val">${kb(ml.averageTotalHandshakeBytes || 0)}</div><div class="sub">Média combinada por sessão</div></div>
-            <div class="kpi ml"><label>Pacotes TCP Médios</label><div class="val">${ml.averagePacketsNeeded || 0} pkt</div><div class="sub">Fragmentação ativa em ${ml.percentageWithFragmentation || '0%'}</div></div>
-          `;
-
-          // 4. RENDERIZAR CARD PRINCIPAL: COMPARATIVO
           document.getElementById('comp-kpis').innerHTML = `
-            <div class="kpi cmp"><label>Diferença Líquida</label><div class="val">+ ${kb(comp.differenceAverageBytes || 0)}</div><div class="sub">Overhead adicionado à camada</div></div>
-            <div class="kpi cmp"><label>Fator de Ampliação</label><div class="val">${comp.increaseFactorOverhead || '1x'}</div><div class="sub">Multiplicação de volume físico</div></div>
-            <div class="kpi cmp"><label>Pacotes Extras Necessários</label><div class="val">+ ${comp.extraPacketsAverageMLDSA || 0} TCP pkts</div><div class="sub">Por processo de handshake</div></div>
-            <div class="kpi cmp"><label>Latência Extra Real</label><div class="val">${comp.latenciaExtraRealMs || 0} ms</div><div class="sub">Atraso induzido por fragmentos</div></div>
+            <div class="kpi ml" style="border-color:#f97316;">
+              <label style="color:#f97316;">Suporta 1 Voo (ML-DSA)</label>
+              <div class="val" style="color:#f97316;">${sat.limiteAssinaturasVooUnicoMLDSA || 3} sigs</div>
+              <div class="sub">Acumulados antes de travar rede</div>
+            </div>
+            
+            <div class="kpi ec" style="border-color:#00d4aa;">
+              <label style="color:#00d4aa;">Suporta 1 Voo (ECDSA)</label>
+              <div class="val" style="color:#00d4aa;">${sat.limiteAssinaturasVooUnicoECDSA || 90} sigs</div>
+              <div class="sub">Acumulados antes de travar rede</div>
+            </div>
+            
+            <div class="kpi net">
+              <label>Capacidade do 1º Voo</label>
+              <div class="val">${kb(sat.capacidadePrimeiroVooBytes || 14600)}</div>
+              <div class="sub">Initcwnd = 10 MSS</div>
+            </div>
           `;
 
-          // BANNER NOTA DE FRAGMENTAÇÃO
-          if (ml.averageTotalHandshakeBytes > net.mtuReal) {
-            document.getElementById('banner-frag').style.display = 'flex';
-            document.getElementById('banner-txt').textContent = ml.notaFragmentacao || 'Aviso de fragmentação IP.';
-          }
-
-          // 5. POR DOCUMENTO — IMPACTO INDIVIDUAL (CORRIGIDO E SEGURO CONTRA CHAVES AUSENTES)
           const gridDocs = document.getElementById('doc-grid');
           gridDocs.innerHTML = '';
           
@@ -448,168 +393,81 @@ public class TlsOverheadService {
                 const isEc = algName === 'ECDSA';
                 const cls = isEc ? 'ec' : 'ml';
                 const unit = algObj.handshake_unitario || {};
-                const acum = algObj.handshake_acumulado || {};
-
+                
                 algosHtml += `
-                  <div style="margin-top: 0.85rem; padding-top: 0.5rem; border-top: 1px dashed var(--border);">
-                    <span class="alg-tag ${cls}">${algName} (×${algObj.totalSignatures || 1})</span>
-                    <div class="doc-row"><span>Handshake Unitário</span><span class="tval">${kb(unit.totalBytes || 0)}</span></div>
-                    <div class="doc-row"><span>Pacotes TCP Unitário</span><span class="tval">${unit.packagesTCP || 0} pkt</span></div>
-                    <div class="doc-row"><span>Total Handshake (${algObj.totalSignatures})</span><span class="tval">${kb(acum.totalHandshakeBytes || 0)}</span></div>
-                    <div class="doc-row"><span>Acumulado no E-mail (B64)</span><span class="tval">${kb(acum.emailBase64Bytes || 0)}</span></div>
-                    <div class="doc-row"><span>Latência Extra Total</span><span class="tval">${Number(acum.latencyExtraMsTotal || 0).toFixed(2)} ms</span></div>
-                    ${unit.fragmentationIP ? `<div class="frag-warn">⚠ Fragmenta IP: Excede o MTU da rede</div>` : ''}
-                  </div>
+                  <span class="alg-tag ${cls}">${algName} (Lote: ${algObj.totalSignatures} sigs)</span>
+                  <div class="doc-row"><span>Custo de 1 Assinatura</span><span>${kb(unit.totalBytes)} (${unit.voosNecessarios} voo)</span></div>
                 `;
               });
             }
 
-            const mailCompleto = d.envio_email_completo || {};
+            const e2e = d.processo_e2e || {};
 
             gridDocs.innerHTML += `
               <div class="doc-card">
                 <div class="doc-name">📄 ${d.fileName}</div>
-                <div class="doc-row"><span>Tamanho Físico</span><span class="tval">${kb(d.fileSizeBytes || 0)}</span></div>
-                <div class="doc-row"><span>Total Assinaturas</span><span class="tval">${d.totalSignatures || 0}</span></div>
-                <div class="doc-row"><span>Mime Type</span><span class="tval" style="font-size:10px;">${d.fileType || 'N/A'}</span></div>
-                <div class="doc-row" style="color:var(--accent); font-weight:500;"><span>E-mail Completo (Doc+Sigs B64)</span><span class="tval">${kb(mailCompleto.totalEmailBase64Bytes || 0)}</span></div>
-                <div class="doc-row"><span>Pacotes TCP E-mail</span><span class="tval">${mailCompleto.packagesTCP || 0} pkt</span></div>
-                <div class="doc-row"><span>Latência Extra E-mail</span><span class="tval">${Number(mailCompleto.latencyExtraMs || 0).toFixed(2)} ms</span></div>
+                <div class="doc-row"><span>Tamanho PDF Puro</span><span>${kb(d.fileSizeBytes)}</span></div>
+                <div class="doc-row"><span>Total de Assinaturas</span><span>${d.totalSignatures}</span></div>
+                
                 ${algosHtml}
+
+                <div class="e2e-box">
+                  <div class="e2e-title">🚀 Processo End-to-End Acumulado</div>
+                  <div class="doc-row" style="border-bottom:none; padding-top:0;">
+                    <span style="color:#e9d5ff;">Volume Total (PDF + Sigs Base64)</span>
+                    <span style="color:#fff;">${kb(e2e.totalEmailBase64Bytes)}</span>
+                  </div>
+                  <div class="doc-row" style="border-bottom:none;">
+                    <span style="color:#e9d5ff;">Total de Pacotes Físicos TCP</span>
+                    <span style="color:#fff;">${e2e.packagesTCP} pkt</span>
+                  </div>
+                  
+                  <div style="margin-top:10px; padding-top:10px; border-top:1px solid rgba(168,85,247,0.3);">
+                    <div class="e2e-val">
+                      <span style="font-size:0.8rem; color:#d8b4fe;">✈️ Voos TCP Acumulados</span>
+                      <span>${e2e.totalVoosE2E} voos</span>
+                    </div>
+                    <div class="e2e-val">
+                      <span style="font-size:0.8rem; color:#d8b4fe;">⏱️ Tempo Total E2E</span>
+                      <span style="color:#fca5a5;">${Number(e2e.tempoTotalE2EMs).toFixed(2)} ms</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             `;
           });
 
-          // 6. TABELA CONSOLIDADA: HANDSHAKE ACUMULADO POR DOCUMENTO
           let thHtml = `
             <tr>
-              <th>ID</th>
-              <th>Nome do Documento</th>
+              <th>Documento</th>
               <th>Algoritmo</th>
               <th>Assinaturas</th>
-              <th>Chaves Acum.</th>
-              <th>Assinaturas Acum.</th>
-              <th>Total Handshake Acum.</th>
+              <th>Volume E2E (Base64)</th>
               <th>Pacotes TCP Totais</th>
-              <th>E-mail Base64 Acum.</th>
-              <th>Latência Extra Total</th>
+              <th>Voos Acumulados (Slow Start)</th>
+              <th>Tempo Total E2E</th>
             </tr>
           `;
           
           docs.forEach(d => {
             if (d.porAlgoritmo) {
-              const totalAlgs = Object.keys(d.porAlgoritmo).length;
+              const e2e = d.processo_e2e || {};
               Object.entries(d.porAlgoritmo).forEach(([algName, algObj], idx) => {
-                const acum = algObj.handshake_acumulado || {};
                 thHtml += `
                   <tr>
-                    ${idx === 0 ? `<td rowspan="${totalAlgs}" class="tval">${d.documentId}</td>` : ''}
-                    ${idx === 0 ? `<td rowspan="${totalAlgs}" style="font-weight:500;">${d.fileName}</td>` : ''}
-                    <td><span class="alg-tag ${algName === 'ECDSA' ? 'ec' : 'ml'}">${algName}</span></td>
-                    <td class="tval">${algObj.totalSignatures || 0}</td>
-                    <td class="tval">${kb(acum.totalPublicKeyBytes || 0)}</td>
-                    <td class="tval">${kb(acum.totalSignatureBytes || 0)}</td>
-                    <td class="tval" style="font-weight:bold;">${kb(acum.totalHandshakeBytes || 0)}</td>
-                    <td class="tval">${acum.packagesTotalTCP || 0} pkt</td>
-                    <td class="tval">${kb(acum.emailBase64Bytes || 0)}</td>
-                    <td class="tval" style="color:#f97316;">${Number(acum.latencyExtraMsTotal || 0).toFixed(2)} ms</td>
+                    <td style="font-weight:bold; font-family:'Space Mono',monospace;">${d.fileName}</td>
+                    <td><span class="alg-tag ${algName === 'ECDSA' ? 'ec' : 'ml'}" style="margin:0;">${algName}</span></td>
+                    <td style="font-family:'Space Mono',monospace;">${algObj.totalSignatures}</td>
+                    <td style="font-family:'Space Mono',monospace;">${kb(e2e.totalEmailBase64Bytes)}</td>
+                    <td style="font-family:'Space Mono',monospace;">${e2e.packagesTCP} pkt</td>
+                    <td style="font-weight:bold; font-family:'Space Mono',monospace; color:#a855f7;">${e2e.totalVoosE2E} voos</td>
+                    <td style="font-weight:bold; font-family:'Space Mono',monospace; color:#fca5a5;">${Number(e2e.tempoTotalE2EMs).toFixed(2)} ms</td>
                   </tr>
                 `;
               });
             }
           });
           document.getElementById('tabela-consolidada').innerHTML = thHtml;
-
-          // 7. GRÁFICOS CHART.JS
-          // Gráfico 1: Envio de E-mail Completo por Documento
-          const labelsDocs = docs.map(d => d.fileName);
-          const dataEmailCompleto = docs.map(d => d.envio_email_completo ? d.envio_email_completo.totalEmailBase64Bytes : 0);
-          const dataDocPuro = docs.map(d => d.fileSizeBytes || 0);
-
-          new Chart(document.getElementById('c-email-completo'), {
-            type: 'bar',
-            data: {
-              labels: labelsDocs,
-              datasets: [
-                { label: 'Tamanho Físico Base do Documento (Bytes)', data: dataDocPuro, backgroundColor: 'rgba(59, 130, 246, 0.2)', borderColor: '#3b82f6', borderWidth: 2, borderRadius: 4 },
-                { label: 'Tamanho Total com Envio Completo (Base64 + Assinaturas)', data: dataEmailCompleto, backgroundColor: 'rgba(168, 85, 247, 0.2)', borderColor: '#a855f7', borderWidth: 2, borderRadius: 4 }
-              ]
-            },
-            options: {
-              responsive: true,
-              scales: {
-                y: { beginAtZero: true, grid: { color: '#1f2d45' }, ticks: { callback: v => kb(v) } },
-                x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
-              },
-              plugins: { legend: { labels: { color: '#e2e8f0' } } }
-            }
-          });
-
-          // Gráfico 2: RADAR — "envio_email_completo por algoritmo + por documento"
-          // Como o envio do e-mail completo mapeia o impacto sistêmico consolidado, vamos cruzar as métricas de transporte.
-          const radarLabels = docs.map(d => d.fileName);
-          const radarDataBytes = docs.map(d => d.envio_email_completo ? d.envio_email_completo.totalEmailBase64Bytes : 0);
-          const radarDataPkts = docs.map(d => d.envio_email_completo ? d.envio_email_completo.packagesTCP * 1000 : 0); // Fator de escala para visualização no radar
-          const radarDataLat = docs.map(d => d.envio_email_completo ? d.envio_email_completo.latencyExtraMs * 1000 : 0);
-
-          new Chart(document.getElementById('c-radar-pqc'), {
-            type: 'radar',
-            data: {
-              labels: radarLabels,
-              datasets: [
-                {
-                  label: 'Volume Físico no E-mail (Bytes)',
-                  data: radarDataBytes,
-                  backgroundColor: 'rgba(0, 212, 170, 0.1)',
-                  borderColor: '#00d4aa',
-                  pointBackgroundColor: '#00d4aa',
-                  borderWidth: 2
-                },
-                {
-                  label: 'Mapeamento de Pacotes TCP (Escala ×1000)',
-                  data: radarDataPkts,
-                  backgroundColor: 'rgba(249, 115, 22, 0.1)',
-                  borderColor: '#f97316',
-                  pointBackgroundColor: '#f97316',
-                  borderWidth: 2
-                },
-                {
-                  label: 'Latência Extra Estimada (Escala µs)',
-                  data: radarDataLat,
-                  backgroundColor: 'rgba(168, 85, 247, 0.1)',
-                  borderColor: '#a855f7',
-                  pointBackgroundColor: '#a855f7',
-                  borderWidth: 2
-                }
-              ]
-            },
-            options: {
-              responsive: true,
-              scales: {
-                r: {
-                  grid: { color: '#1f2d45' },
-                  angleLines: { color: '#1f2d45' },
-                  ticks: { display: false },
-                  pointLabels: { color: '#94a3b8', font: { size: 11, family: 'Space Mono' } }
-                }
-              },
-              plugins: {
-                legend: { labels: { color: '#e2e8f0' } },
-                tooltip: {
-                  callbacks: {
-                    label: function(context) {
-                      const idx = context.dataIndex;
-                      const origDoc = docs[idx] || {};
-                      const ecM = origDoc.envio_email_completo || {};
-                      if (context.datasetIndex === 0) return ` Tamanho Total: ${kb(ecM.totalEmailBase64Bytes || 0)}`;
-                      if (context.datasetIndex === 1) return ` Pacotes TCP: ${ecM.packagesTCP || 0} pkts`;
-                      return ` Latência: ${Number(ecM.latencyExtraMs || 0).toFixed(2)} ms`;
-                    }
-                  }
-                }
-              }
-            }
-          });
         }
 
         try {
@@ -618,7 +476,7 @@ public class TlsOverheadService {
         } catch(err) {
           const el = document.getElementById('error-msg');
           el.style.display = 'block';
-          el.textContent = 'Erro crítico ao injetar JSON do endpoint Java: ' + err.message;
+          el.textContent = 'Erro crítico ao injetar JSON: ' + err.message;
         }
         </script>
         </body>
@@ -626,11 +484,11 @@ public class TlsOverheadService {
         """.replace("$$DADOS_JSON$$", json);
 
     try {
-      Path path = Paths.get("dashboard_pqc_redes.html");
-      Files.writeString(path, html, StandardCharsets.UTF_8);
-      return "Arquivo gerado com sucesso em: " + path.toAbsolutePath().toString();
+      java.nio.file.Path path = java.nio.file.Paths.get("dashboard_pqc_redes.html");
+      java.nio.file.Files.writeString(path, html, java.nio.charset.StandardCharsets.UTF_8);
+      return "Arquivo HTML E2E gerado com sucesso em: " + path.toAbsolutePath().toString();
     } catch (Exception e) {
-      throw new RuntimeException("Erro ao criar o arquivo físico HTML: " + e.getMessage(), e);
+      throw new RuntimeException("Erro ao criar o arquivo: " + e.getMessage(), e);
     }
   }
 }

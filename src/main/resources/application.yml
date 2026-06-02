@@ -12,8 +12,8 @@ spring:
     properties:
       mail.smtp.auth: true
       mail.smtp.starttls.enable: true
-      mail.smtp.connectiontimeout: 15000
-      mail.smtp.timeout: 15000
+      mail.smtp.connectiontimeout: 60000
+      mail.smtp.timeout: 60000
 
   # Banco H2 em memória para desenvolvimento/testes
   datasource:
